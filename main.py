@@ -20,7 +20,7 @@ def custom_collate_fn(
     batch: List[Tuple[np.array, int, int]],
     calc_token_dropout: Optional[Callable] = None,
     max_seq_len: int = 1024
-) -> Tuple[List[torch.tensor], List[torch.tensor], List[torch.tensor], List[torch.tensor]]:
+) -> Tuple[List[torch.tensor], List[torch.tensor], List[torch.tensor], List[torch.tensor],List[torch.tensor]]:
 
         # 处理每个样本并计算调整后的长度
     processed_items = []
@@ -34,12 +34,16 @@ def custom_collate_fn(
     packed_labels = []
     packed_adjusted_lengths = []
     packed_indices = []
+    batched_image_ids=[]
     
     buffer = np.empty((3, max_seq_len), dtype=np.float32)
     labels=[]
     lengths=[]
+    image_ids=[]
     indices=[]
-    ptr = 0    # 当前写入位置指针
+    ptr = 0 
+    id=0# 当前写入位置指针
+    
     for item,adjusted_len_one_channel ,label,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
         C = item.shape[1]  # 通道数（注意：应在拆分前获取）
@@ -60,27 +64,30 @@ def custom_collate_fn(
             if ptr > 0:
                 # 截取有效数据
                 concatenated = buffer[:, :ptr] 
-                concatenated =torch.tensor(concatenated)
+                concatenated =torch.from_numpy(concatenated)
                 packed_batch.append(concatenated.permute(1,0))
                 packed_labels.append(torch.tensor(labels))
-                packed_adjusted_lengths.append(torch.tensor(lengths))
-                packed_indices.append(torch.tensor(indices))       
+                packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
+                packed_indices.append(torch.tensor(indices))  
+                batched_image_ids.append(torch.tensor(image_ids))     
                 # 重置指针
                 ptr = 0
+                id=0
                 labels=[]
                 indices=[]
                 lengths=[]
-
+                image_ids=[]
         # 添加新元素时:
         if ptr + sub_len <=max_seq_len:
+            id=id+1
             buffer[ :, ptr:ptr+sub_len] = item
             ptr += sub_len
             labels.append(label)
             lengths.append(sub_len)
             indices.append(index)
+            image_ids.extend([id] * sub_len)
 
-
-    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices
+    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,batched_image_ids
 
 
 
@@ -94,8 +101,9 @@ def pre_train(args, data_train):
         data_train,
         batch_size=args.batch_size,  # 设置批次大小
         shuffle=True,
-        num_workers=32,
-        collate_fn=collate_with_dropout  # 使用自定义 collate 函数
+        num_workers=12,
+        collate_fn=collate_with_dropout,
+        pin_memory=True# 使用自定义 collate 函数
     )
     criterion = nn.MSELoss(reduction='none')
     model = fetch_classifier('STMAE_Pre', args=args)
@@ -163,7 +171,7 @@ if __name__ == "__main__":
     args = handle_argv_pre_train()
     # data_train_u, label_train_u, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test = load_data(args)
     data_train = ImageFolder(
-        root="data/data_sho_421",
+        root="../data/data/data_sho_421",
 )
     print("start pre-train\n")
     pre_train(args, data_train)

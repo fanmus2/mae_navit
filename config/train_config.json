@@ -20,7 +20,7 @@
     },
     "opp_30_60": {
         "balance": false,
-        "batch_size": 20,
+        "batch_size": 24,
         "label_rate": 0.1,
         "mask_ratio": 0.5,
         "epoch": 100,
