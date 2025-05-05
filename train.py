@@ -34,7 +34,9 @@ class Trainer(object):
             
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()
+
             for (batch,_, batch_adjusted_lengths,_,batched_image_ids) in data_loader_train:
+
                 batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
                 #生成atten mask
                 attn_mask = rearrange(batched_image_ids, 'b i -> b 1 i 1') == rearrange(batched_image_ids, 'b j -> b 1 1 j')   

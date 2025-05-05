@@ -24,6 +24,7 @@ def custom_collate_fn(
 
         # 处理每个样本并计算调整后的长度
     processed_items = []
+
     for item, index, label in batch:
         adjusted_len= item.shape[-1]  # 原始序列长度 (L)
         # 将 (T, 1, C, L) 转换为 T 个 (1, 1, C, L)
@@ -36,6 +37,9 @@ def custom_collate_fn(
     packed_indices = []
     batched_image_ids=[]
     
+    end_time = time.time()
+
+    start_time = time.time()
     buffer = np.empty((3, max_seq_len), dtype=np.float32)
     labels=[]
     lengths=[]
@@ -86,7 +90,7 @@ def custom_collate_fn(
             lengths.append(sub_len)
             indices.append(index)
             image_ids.extend([id] * sub_len)
-
+    print("代码运行时间：", end_time - start_time, "秒")
     return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,batched_image_ids
 
 
