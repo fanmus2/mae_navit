@@ -28,27 +28,14 @@ class Trainer(object):
 
         global_step = 0 # global iteration steps regardless of epochs
         best_loss = 1e6
-        model_best = model.state_dict()
+        # model_best = model.state_dict()
         
         for e in range(self.args.epoch):
-            
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
-            self.model.train()
-
-            for (batch,_, batch_adjusted_lengths,_,batched_image_ids) in data_loader_train:
-
-                batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
-                #生成atten mask
-                attn_mask = rearrange(batched_image_ids, 'b i -> b 1 i 1') == rearrange(batched_image_ids, 'b j -> b 1 1 j')   
-                lengths = torch.tensor([seq.shape[-2] for seq in batch])
-                max_length = torch.arange(lengths.amax().item())
-                key_pad_mask = rearrange(lengths, 'b -> b 1') <= rearrange(max_length, 'n -> 1 n')
-                key_pad_mask=~key_pad_mask 
-                #记录有效值 下面就padding
-                batch = pad_sequence(batch,batch_first=True)
-                attn_mask = attn_mask & rearrange(key_pad_mask, 'b j -> b 1 1 j')#这就是最终要的mask
-
-                # 开始训练流程
+            self.model.train()    
+            # start_time1 = time.time()    
+            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader_train:
+                  
                 batch = batch.to(self.device)
                 self.optimizer.zero_grad()
                 attn_mask=attn_mask.to(self.device)
@@ -63,7 +50,7 @@ class Trainer(object):
                     % (e + 1, self.args.epoch, loss_sum / len(data_loader_train)))
             
             writer.add_scalar('pre_loss/loss_train', loss_sum / len(data_loader_train), global_step=e + 1)
-        self.model.load_state_dict(model_best)
+        # self.model.load_state_dict(model_best)
         print('The Total Epoch have been reached.')
 
 

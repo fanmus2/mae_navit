@@ -104,7 +104,8 @@ class Attention(nn.Module):
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
-
+            
+        x=torch.where(torch.isnan(x),torch.full_like(x,0),x)
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -168,7 +169,7 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))  
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x),attn_mask=attn_mask)))  
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
@@ -202,7 +203,7 @@ class STMAE_Pre(nn.Module):
             for i in range(decoder_depth)])
         self.decoder_norm = norm_layer(decoder_embed_dim)
         # self.decoder_pred = nn.Linear(decoder_embed_dim, node_dim*node_num, bias=True)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, 3, bias=True)
+        self.decoder_pred = nn.Linear(decoder_embed_dim,3, bias=True)
         self.initialize_weights()
 
     def initialize_weights(self):

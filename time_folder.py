@@ -3,7 +3,7 @@ import os.path
 from pathlib import Path
 from typing import Any, Callable, cast, Dict, List, Optional, Tuple, Union
 import numpy as np
-
+import time
 from PIL import Image
 
 from torchvision.datasets.vision import VisionDataset
@@ -243,6 +243,7 @@ class DatasetFolder(VisionDataset):
         Returns:
             tuple: (sample, target) where target is class_index of the target class.
         """
+
         path, target = self.samples[index]
         sample,label = self.loader(path)
         if self.transform is not None:

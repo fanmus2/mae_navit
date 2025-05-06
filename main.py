@@ -20,26 +20,22 @@ def custom_collate_fn(
     batch: List[Tuple[np.array, int, int]],
     calc_token_dropout: Optional[Callable] = None,
     max_seq_len: int = 1024
-) -> Tuple[List[torch.tensor], List[torch.tensor], List[torch.tensor], List[torch.tensor],List[torch.tensor]]:
-
+) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor]:
         # 处理每个样本并计算调整后的长度
     processed_items = []
-
+    # start_time2 = time.time() 
     for item, index, label in batch:
         adjusted_len= item.shape[-1]  # 原始序列长度 (L)
         # 将 (T, 1, C, L) 转换为 T 个 (1, 1, C, L)
         for t in range(item.shape[0]):
             processed_items.append((item[t], adjusted_len, label, index))        
     random.shuffle(processed_items)         
-    packed_batch = []
-    packed_labels = []
-    packed_adjusted_lengths = []
-    packed_indices = []
-    batched_image_ids=[]
+    packed_batch = []   #数据
+    packed_labels = []  #标签
+    packed_adjusted_lengths = []    #长度
+    packed_indices = [] #标记来源于哪个数据集
+    batched_image_ids=[]    #id 用于区分一个序列内 的不同数据窗
     
-    end_time = time.time()
-
-    start_time = time.time()
     buffer = np.empty((3, max_seq_len), dtype=np.float32)
     labels=[]
     lengths=[]
@@ -50,10 +46,12 @@ def custom_collate_fn(
     
     for item,adjusted_len_one_channel ,label,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
-        C = item.shape[1]  # 通道数（注意：应在拆分前获取）
+        #adjusted_len_one_channel 代表初始长度 特征还没有拆分 成3的时候
+        C = item.shape[1]  # 通道数
         assert C % 3 == 0, f"通道数必须是3的倍数，当前为{C}."
         n = C // 3
         adjusted_len = n * adjusted_len_one_channel
+        adjusted_len = adjusted_len_one_channel
         adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度   
         # --- 数据处理与合并 ---     
         # 拆分并合并通道
@@ -71,7 +69,7 @@ def custom_collate_fn(
                 concatenated =torch.from_numpy(concatenated)
                 packed_batch.append(concatenated.permute(1,0))
                 packed_labels.append(torch.tensor(labels))
-                packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
+                packed_adjusted_lengths.append(torch.tensor(lengths))
                 packed_indices.append(torch.tensor(indices))  
                 batched_image_ids.append(torch.tensor(image_ids))     
                 # 重置指针
@@ -90,22 +88,43 @@ def custom_collate_fn(
             lengths.append(sub_len)
             indices.append(index)
             image_ids.extend([id] * sub_len)
-    print("代码运行时间：", end_time - start_time, "秒")
-    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,batched_image_ids
+    if ptr > 0:
+# 截取有效数据
+        concatenated = buffer[:, :ptr] 
+        concatenated =torch.from_numpy(concatenated)
+        packed_batch.append(concatenated.permute(1,0))
+        packed_labels.append(torch.tensor(labels))
+        packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
+        packed_indices.append(torch.tensor(indices))  
+        batched_image_ids.append(torch.tensor(image_ids))
+              
+    batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
+    #注意力 掩码 用来将一个序列内 不同窗独立开来 
+    attn_mask = rearrange(batched_image_ids, 'b i -> b 1 i 1') == rearrange(batched_image_ids, 'b j -> b 1 1 j')   
+    lengths = torch.tensor([seq.shape[-2] for seq in packed_batch])
+    max_length = torch.arange(lengths.amax().item())
+    #padding 掩码
+    key_pad_mask = rearrange(lengths, 'b -> b 1') <= rearrange(max_length, 'n -> 1 n')
+    key_pad_mask=~key_pad_mask 
+ 
+    #记录有效值 下面就padding
+    packed_batch = pad_sequence(packed_batch,batch_first=True)
+    attn_mask = attn_mask & rearrange(key_pad_mask, 'b j -> b 1 1 j')#这就是最终要的mask
+    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask
 
 
 
 def pre_train(args, data_train):
     collate_with_dropout = partial(
         custom_collate_fn,
-        calc_token_dropout=None,  # 示例：固定 dropout 率为 0.1
+        calc_token_dropout=None,  
         max_seq_len=args.maxlen
     )
     data_set_train = DataLoader(
         data_train,
         batch_size=args.batch_size,  # 设置批次大小
         shuffle=True,
-        num_workers=12,
+        num_workers=1,
         collate_fn=collate_with_dropout,
         pin_memory=True# 使用自定义 collate 函数
     )
@@ -179,7 +198,7 @@ if __name__ == "__main__":
 )
     print("start pre-train\n")
     pre_train(args, data_train)
-
+    #先把预训练部分搞出来 微调先注释了
     # print("start fine-tuning\n")
     # args = handle_argv_finetune(args)
     # fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test)
