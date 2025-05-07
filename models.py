@@ -66,8 +66,8 @@ class Attention(nn.Module):
             qkv_bias: bool =False,
             qk_norm: bool = True,
             proj_bias: bool = True,
-            attn_drop: float = 0.,
-            proj_drop: float = 0.,
+            attn_drop: float = 0.3,
+            proj_drop: float = 0.3,
             norm_layer: Type[nn.Module] = RMSNorm,
     ) -> None:
         super().__init__()
@@ -102,10 +102,9 @@ class Attention(nn.Module):
             if attn_mask is not None:
                 attn = attn.masked_fill(~attn_mask, float('-inf'))  # ~ 表示逻辑非
             attn = attn.softmax(dim=-1)
+            attn=torch.where(torch.isnan(attn),torch.full_like(attn,0),attn)
             attn = self.attn_drop(attn)
             x = attn @ v
-            
-        x=torch.where(torch.isnan(x),torch.full_like(x,0),x)
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -170,7 +169,7 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x),attn_mask=attn_mask)))  
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        # x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
@@ -179,7 +178,7 @@ class STMAE_Pre(nn.Module):
     def __init__(self, embed_dim=3, depth=10, num_heads=4,
                  decoder_embed_dim=3, decoder_depth=2, decoder_num_heads=4,
                  mlp_ratio=4., norm_layer=nn.LayerNorm,
-                 node_dim=6, window_size=512, node_num=7, mask_ratio=0.5, len_mask=1,dropout=0):
+                 node_dim=6, window_size=512, node_num=7, mask_ratio=0.5, len_mask=1,proj_drop=0,attn_drop=0,in_out_dim=3):
         super().__init__()
 
         self.len_mask = len_mask
@@ -192,18 +191,18 @@ class STMAE_Pre(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, window_size + 1, embed_dim), requires_grad=False)
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, window_size + 1, decoder_embed_dim), requires_grad=False)
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
             for i in range(decoder_depth)])
         self.decoder_norm = norm_layer(decoder_embed_dim)
         # self.decoder_pred = nn.Linear(decoder_embed_dim, node_dim*node_num, bias=True)
-        self.decoder_pred = nn.Linear(decoder_embed_dim,3, bias=True)
+        self.decoder_pred = nn.Linear(decoder_embed_dim,in_out_dim, bias=True)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -281,7 +280,7 @@ class STMAE_Pre(nn.Module):
             attn_mask_masked=attn_mask_masked.to(x.device)
             for blk in self.blocks:
                 x = blk(x,attn_mask=attn_mask_masked)
-            # x = self.norm(x)
+            x = self.norm(x)
             return x, mask, ids_restore
     
     def forward_decoder(self, x, ids_restore,attn_mask):
@@ -292,7 +291,7 @@ class STMAE_Pre(nn.Module):
         x = torch.gather(x, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
         for blk in self.decoder_blocks:
             x = blk(x,attn_mask=attn_mask)
-        # x = self.decoder_norm(x)
+        x = self.decoder_norm(x)
         x = self.decoder_pred(x)
         return x
 
@@ -310,8 +309,8 @@ class STMAE_Pre(nn.Module):
         # 根据掩码计算损失
         idx = mask.nonzero()  # 获取被遮蔽的位置索引
         pred = pred[idx[:, 0], idx[:, 1], :]  # 提取预测中被遮蔽的部分
-        imgs_masked = x[idx[:, 0], idx[:, 1], :]  # 提取原始输入中被遮蔽的部分
-
+        # imgs_masked = x[idx[:, 0], idx[:, 1], :]  # 提取原始输入中被遮蔽的部分
+        imgs_masked= x[idx[:, 0], idx[:, 1], :]
         # 调整输出形状（保持批次维度）
         pred = pred.reshape(x.shape[0], -1, x.shape[2])  # (N, num_masked, D)
         imgs= imgs_masked.reshape(x.shape[0], -1, x.shape[2])  # (N, num_masked, D)
@@ -418,7 +417,7 @@ def fetch_classifier(method, args=None):
         model = STMAE_Pre(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio, 
         norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.dataset_cfg.seq_len, node_num=args.dataset_cfg.node_num,
         decoder_embed_dim=args.decoder_embed_dim, decoder_depth=args.decoder_depth, decoder_num_heads=args.decoder_num_heads, 
-        mask_ratio=args.mask_ratio, len_mask=args.len_mask)
+        mask_ratio=args.mask_ratio, len_mask=args.len_mask,proj_drop=args.proj_drop,attn_drop=args.attn_drop,in_out_dim=args.in_out_dim)
     elif 'STMAE_Finetune' in method:
         model = STMAE_Finetune(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio,
         norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.dataset_cfg.seq_len, node_num=args.dataset_cfg.node_num, num_classes=args.dataset_cfg.activity_label_size)

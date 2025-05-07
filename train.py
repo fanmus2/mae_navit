@@ -25,7 +25,6 @@ class Trainer(object):
         model = self.model.to(self.device)
         if data_parallel: # use Data Parallelism with Multi-GPU
             model = nn.DataParallel(model)
-
         global_step = 0 # global iteration steps regardless of epochs
         best_loss = 1e6
         # model_best = model.state_dict()

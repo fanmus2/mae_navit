@@ -36,7 +36,7 @@ def custom_collate_fn(
     packed_indices = [] #标记来源于哪个数据集
     batched_image_ids=[]    #id 用于区分一个序列内 的不同数据窗
     
-    buffer = np.empty((3, max_seq_len), dtype=np.float32)
+    buffer = np.empty((args.in_out_dim, max_seq_len), dtype=np.float32)
     labels=[]
     lengths=[]
     image_ids=[]
@@ -50,14 +50,14 @@ def custom_collate_fn(
         C = item.shape[1]  # 通道数
         assert C % 3 == 0, f"通道数必须是3的倍数，当前为{C}."
         n = C // 3
-        adjusted_len = n * adjusted_len_one_channel
+        # adjusted_len = n * adjusted_len_one_channel
         adjusted_len = adjusted_len_one_channel
         adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度   
         # --- 数据处理与合并 ---     
         # 拆分并合并通道
-        item = item.reshape(1, n, 3, adjusted_len_one_channel)
-        item = np.transpose(item, (0, 2, 1, 3))  # (1, 3, n, adjusted_len_one_channel)
-        item = item.reshape(1, 3, -1)  # (1, 3, adjusted_len)
+        # item = item.reshape(1, n, 3, adjusted_len_one_channel)
+        # item = np.transpose(item, (0, 2, 1, 3))  # (1, 3, n, adjusted_len_one_channel)
+        # item = item.reshape(1, 3, -1)  # (1, 3, adjusted_len)
         item=item[:,:,0:adjusted_len]
         item = np.squeeze(item, axis=0)  #(3, adjusted_len)
         sub_len = adjusted_len   

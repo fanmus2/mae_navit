@@ -68,6 +68,9 @@ def create_train_config(args, dataset, version):
         args.decoder_depth = train_config_all[name]['decoder_depth']
         args.decoder_num_heads = train_config_all[name]['decoder_num_heads']
         args.maxlen = train_config_all[name]['maxlen']
+        args.in_out_dim=train_config_all[name]['in_out_dim']
+        args.proj_drop=train_config_all[name]['proj_drop']
+        args.attn_drop=train_config_all[name]['attn_drop']
         return args
     else:
         print("No Train Config Found!")
