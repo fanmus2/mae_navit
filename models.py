@@ -169,7 +169,7 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x),attn_mask=attn_mask)))  
-        # x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
