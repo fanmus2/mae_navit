@@ -276,7 +276,7 @@ class STMAE_Pre(nn.Module):
         return x_masked, mask, ids_restore,attn_mask_masked
 
     def forward_encoder(self, x,attn_mask,batch_adjusted_lengths, mask_ratio):
-            x = x + self.pos_embed[:, 1:, :]
+            x = x + self.pos_embed[:, 1:x.shape[1]+1, :]
             # masking: length -> length * mask_ratio
             x, mask, ids_restore,attn_mask_masked = self.random_masking(x, mask_ratio,attn_mask,batch_adjusted_lengths)
             attn_mask_masked=attn_mask_masked.to(x.device)
@@ -296,7 +296,7 @@ class STMAE_Pre(nn.Module):
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
         x = torch.cat([x[:, :1, :], x_], dim=1)
         # add pos embed
-        x = x + self.decoder_pos_embed
+        x = x + self.decoder_pos_embed[:, 0:x.shape[1], :]
         for blk in self.decoder_blocks:
             x = blk(x,attn_mask=attn_mask)
         x = self.decoder_norm(x)
@@ -313,13 +313,15 @@ class STMAE_Pre(nn.Module):
         # 编码器-解码器流程
         latent, mask, ids_restore = self.forward_encoder(x, attn_mask,batch_adjusted_lengths,mask_ratio=self.mask_ratio)
         pred = self.forward_decoder(latent, ids_restore,attn_mask)
+        
+        imgs = imgs.permute(0, 2, 1, 3)
+        imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], -1)
         idx = mask.nonzero()  # 获取被遮蔽的位置索引
         pred = pred[idx[:, 0], idx[:, 1], :]  # 提取预测中被遮蔽的部分
-        # imgs_masked = x[idx[:, 0], idx[:, 1], :]  # 提取原始输入中被遮蔽的部分
-        imgs_masked= x[idx[:, 0], idx[:, 1], :]
+        imgs= imgs[idx[:, 0], idx[:, 1], :]
         # 调整输出形状（保持批次维度）
-        pred = pred.reshape(x.shape[0], -1, x.shape[2])  # (N, num_masked, D)
-        imgs= imgs_masked.reshape(x.shape[0], -1, x.shape[2])  # (N, num_masked, D)
+        pred = pred.reshape(x.shape[0], -1, pred.shape[1])  # (N, num_masked, D)
+        imgs= imgs.reshape(x.shape[0], -1, imgs.shape[1])  # (N, num_masked, D)
         return imgs, pred
 
 class STMAE_Finetune(nn.Module):
@@ -421,7 +423,7 @@ def get_ts_sincos_pos_embed(embed_dim, window_size, cls_token=False):
 def fetch_classifier(method, args=None):
     if 'STMAE_Pre' in method:
         model = STMAE_Pre(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio, 
-        norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.maxlen, node_num=args.dataset_cfg.node_num,
+        norm_layer=nn.LayerNorm, node_dim=3, window_size=args.maxlen, node_num=1,
         decoder_embed_dim=args.decoder_embed_dim, decoder_depth=args.decoder_depth, decoder_num_heads=args.decoder_num_heads, 
         mask_ratio=args.mask_ratio, len_mask=args.len_mask,proj_drop=args.proj_drop,attn_drop=args.attn_drop,in_out_dim=args.in_out_dim)
     elif 'STMAE_Finetune' in method:
