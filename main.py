@@ -75,6 +75,7 @@ def custom_collate_fn(
                 indices=[]
                 lengths=[]
                 image_ids=[]
+                
         # 添加新元素时:
         if ptr + sub_len <=max_seq_len:
             id=id+1
