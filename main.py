@@ -23,10 +23,9 @@ def custom_collate_fn(
 ) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor]:
         # 处理每个样本并计算调整后的长度
     processed_items = []
-    # start_time2 = time.time() 
     for item, index, label in batch:
         adjusted_len= item.shape[-1]  # 原始序列长度 (L)
-        # 将 (T, 1, C, L) 转换为 T 个 (1, 1, C, L)
+        # 将 ( C, L) 转换为 T 个 ( C, L)
         for t in range(item.shape[0]):
             processed_items.append((item[t], adjusted_len, label, index))        
     random.shuffle(processed_items)         
@@ -43,7 +42,6 @@ def custom_collate_fn(
     indices=[]
     ptr = 0 
     id=0# 当前写入位置指针
-    
     for item,adjusted_len_one_channel ,label,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
         #adjusted_len_one_channel 代表初始长度 特征还没有拆分 成3的时候
@@ -52,20 +50,18 @@ def custom_collate_fn(
         n = C // 3
         # adjusted_len = n * adjusted_len_one_channel
         adjusted_len = adjusted_len_one_channel
-        adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度   
-        # --- 数据处理与合并 ---     
+        adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度     
         # 拆分并合并通道
         # item = item.reshape(1, n, 3, adjusted_len_one_channel)
         # item = np.transpose(item, (0, 2, 1, 3))  # (1, 3, n, adjusted_len_one_channel)
         # item = item.reshape(1, 3, -1)  # (1, 3, adjusted_len)
-        item=item[:,:,0:adjusted_len]
-        item = np.squeeze(item, axis=0)  #(3, adjusted_len)
+        item=item[:,0:adjusted_len]
         sub_len = adjusted_len   
         # 在打包逻辑中:
         if ptr + sub_len > max_seq_len:
             if ptr > 0:
                 # 截取有效数据
-                concatenated = buffer[:, :ptr] 
+                concatenated = buffer[:, :ptr].copy()
                 concatenated =torch.from_numpy(concatenated)
                 packed_batch.append(concatenated.permute(1,0))
                 packed_labels.append(torch.tensor(labels))
@@ -90,14 +86,14 @@ def custom_collate_fn(
             image_ids.extend([id] * sub_len)
     if ptr > 0:
 # 截取有效数据
-        concatenated = buffer[:, :ptr] 
+        concatenated = buffer[:, :ptr].copy() 
         concatenated =torch.from_numpy(concatenated)
         packed_batch.append(concatenated.permute(1,0))
         packed_labels.append(torch.tensor(labels))
         packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
         packed_indices.append(torch.tensor(indices))  
-        batched_image_ids.append(torch.tensor(image_ids))
-              
+        batched_image_ids.append(torch.tensor(image_ids))    
+    #(L,c)       
     batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
     #注意力 掩码 用来将一个序列内 不同窗独立开来 
     attn_mask = rearrange(batched_image_ids, 'b i -> b 1 i 1') == rearrange(batched_image_ids, 'b j -> b 1 1 j')   
@@ -192,7 +188,6 @@ def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data
 
 if __name__ == "__main__":
     args = handle_argv_pre_train()
-    # data_train_u, label_train_u, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test = load_data(args)
     data_train = ImageFolder(
         root="../data/data/data_sho_421",
 )

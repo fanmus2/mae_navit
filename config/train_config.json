@@ -8,7 +8,7 @@
         "mask_ratio": 0.5,
         "epoch": 2000,
         "fine_epoch": 500,
-        "pre_lr": 1e-3,
+        "pre_lr": 5e-3,
         "fine_lr": 5e-3,
         "len_mask": 1,
         "embed_dim": 45, 
@@ -18,7 +18,7 @@
         "decoder_embed_dim": 16,
         "decoder_depth": 3,
         "decoder_num_heads": 4,
-        "maxlen": 48,
+        "maxlen": 96,
         "in_out_dim":45,
         "proj_drop":0.1,
         "attn_drop":0.1

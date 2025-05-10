@@ -287,7 +287,7 @@ IMG_EXTENSIONS = (".npy")
 #     else:
 #         return pil_loader(path)
 
-def npy_loader(path: str) -> Tuple[np.ndarray,int]:
+def npy_loader(path: str) -> Tuple[any,any]:
     """NPY 文件专用加载器"""
     try:
         data = np.load(path, allow_pickle=True)  # 加载 .npy 文件
@@ -295,14 +295,10 @@ def npy_loader(path: str) -> Tuple[np.ndarray,int]:
             raise ValueError(f"File {path} is empty.")
         
         sample, label = zip(*data)
-        sample = np.stack(sample, axis=0)  # 堆叠样本为二维数组
-        label= label[1]   
-        # 确保 sample 是一个 NumPy 数组
-        sample = np.array(sample, dtype=np.float32)
-        
-        # 确保 label 是一个整数
-
-        
+        sample = np.stack(sample)
+        sample=sample.squeeze(1)# 堆叠样本为二维数组
+        sample = sample.astype(np.float32)   
+        # 确保 label 是一个整数  
         return sample, label
         
     except Exception as e:
