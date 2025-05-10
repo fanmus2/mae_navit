@@ -45,6 +45,7 @@ def custom_collate_fn(
     for item,adjusted_len_one_channel ,label,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
         #( C, L)
+        adjusted_len = adjusted_len_one_channel
         adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度     
         # 拆分并合并通道
         item=item[:,0:adjusted_len]
