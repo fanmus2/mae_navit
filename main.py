@@ -183,7 +183,7 @@ def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data
 if __name__ == "__main__":
     args = handle_argv_pre_train()
     data_train = ImageFolder(
-        root="../data/data/data_sho_421",
+        root="../data_split_opp",
 )
     print("start pre-train\n")
     pre_train(args, data_train)
