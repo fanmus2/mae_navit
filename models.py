@@ -276,7 +276,7 @@ class STMAE_Pre(nn.Module):
         return x_masked, mask, ids_restore,attn_mask_masked
 
     def forward_encoder(self, x,attn_mask,batch_adjusted_lengths, mask_ratio):
-            x = x + self.pos_embed[:, 1:x.shape[1]+1, :]
+            x = x + self.pos_embed[:, 1:, :]
             # masking: length -> length * mask_ratio
             x, mask, ids_restore,attn_mask_masked = self.random_masking(x, mask_ratio,attn_mask,batch_adjusted_lengths)
             attn_mask_masked=attn_mask_masked.to(x.device)
@@ -296,7 +296,7 @@ class STMAE_Pre(nn.Module):
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
         x = torch.cat([x[:, :1, :], x_], dim=1)
         # add pos embed
-        x = x + self.decoder_pos_embed[:, 0:x.shape[1], :]
+        x = x + self.decoder_pos_embed
         for blk in self.decoder_blocks:
             x = blk(x,attn_mask=attn_mask)
         x = self.decoder_norm(x)
@@ -423,7 +423,7 @@ def get_ts_sincos_pos_embed(embed_dim, window_size, cls_token=False):
 def fetch_classifier(method, args=None):
     if 'STMAE_Pre' in method:
         model = STMAE_Pre(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio, 
-        norm_layer=nn.LayerNorm, node_dim=3, window_size=args.maxlen, node_num=1,
+        norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.maxlen, node_num=args.dataset_cfg.node_num,
         decoder_embed_dim=args.decoder_embed_dim, decoder_depth=args.decoder_depth, decoder_num_heads=args.decoder_num_heads, 
         mask_ratio=args.mask_ratio, len_mask=args.len_mask,proj_drop=args.proj_drop,attn_drop=args.attn_drop,in_out_dim=args.in_out_dim)
     elif 'STMAE_Finetune' in method:
