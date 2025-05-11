@@ -124,8 +124,8 @@ def pre_train(args, data_train):
 
     def func_loss(model, batch,mask,batch_adjusted_lengths):
         data=batch
-        # seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
-        seqs, seq_recon = model(data)
+        seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
+        # seqs, seq_recon = model(data)
         loss = criterion(seq_recon, seqs)
         return loss
 

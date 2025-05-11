@@ -18,7 +18,7 @@
         "decoder_embed_dim": 16,
         "decoder_depth": 3,
         "decoder_num_heads": 4,
-        "maxlen": 60,
+        "maxlen": 120,
         "in_out_dim":45,
         "proj_drop":0.1,
         "attn_drop":0.1
