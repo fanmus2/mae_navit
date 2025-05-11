@@ -245,13 +245,13 @@ class DatasetFolder(VisionDataset):
         """
 
         path, target = self.samples[index]
-        sample,label = self.loader(path)
+        sample = self.loader(path)
         if self.transform is not None:
             sample = self.transform(sample)
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return sample, target,label
+        return sample, target
 
 
     def __len__(self) -> int:
@@ -287,19 +287,21 @@ IMG_EXTENSIONS = (".npy")
 #     else:
 #         return pil_loader(path)
 
-def npy_loader(path: str) -> Tuple[any,any]:
+def npy_loader(path: str) -> any:
     """NPY 文件专用加载器"""
     try:
         data = np.load(path, allow_pickle=True)  # 加载 .npy 文件
         if len(data) == 0:
             raise ValueError(f"File {path} is empty.")
         
-        sample, label = zip(*data)
-        sample = np.stack(sample)
-        sample=sample.squeeze(1)# 堆叠样本为二维数组
+        # sample, label = zip(*data)
+        # sample = np.stack(sample)
+        sample=data
+        sample=np.transpose(sample,(0,2,1))
+        # sample=sample.squeeze(1)# 堆叠样本为二维数组
         sample = sample.astype(np.float32)   
         # 确保 label 是一个整数  
-        return sample, label
+        return sample
         
     except Exception as e:
         print(f"Error loading {path}: {str(e)}")

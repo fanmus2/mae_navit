@@ -100,14 +100,6 @@ class Attention(nn.Module):
             attn = q @ k.transpose(-2, -1)
                     # 应用布尔型 attn_mask（关键修改）
             if attn_mask is not None:
-                original_n = attn_mask.shape[-1]
-                new_n = original_n + 1
-                # 创建一个新的掩码，形状为 (N, 1, new_n, new_n) 并且所有值都为 True
-                new_attn_mask = torch.full((B, 1, new_n, new_n), True, dtype=torch.bool, device=attn_mask.device)                
-                # 如果需要保留原始掩码的部分，可以直接复制过来
-                new_attn_mask[..., 1:, 1:] = attn_mask
-                # 替换原始的掩码
-                attn_mask = new_attn_mask
                 attn = attn.masked_fill(~attn_mask, float('-inf'))  # ~ 表示逻辑非
             attn = attn.softmax(dim=-1)
             attn=torch.where(torch.isnan(attn),torch.full_like(attn,0),attn)
@@ -131,6 +123,7 @@ class LayerScale(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
     
 # class Block(nn.Module):
 #     def __init__(
@@ -208,18 +201,22 @@ class STMAE_Pre(nn.Module):
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, window_size + 1, decoder_embed_dim), requires_grad=False)
+        self.decoder_blocks = nn.ModuleList([
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            for i in range(decoder_depth)])        
         # self.decoder_blocks = nn.ModuleList([
         #     Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
         #     for i in range(decoder_depth)])
-        self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
-            for i in range(decoder_depth)])
         self.decoder_norm = norm_layer(decoder_embed_dim)
         # self.decoder_pred = nn.Linear(decoder_embed_dim, node_dim*node_num, bias=True)
         self.decoder_pred = nn.Linear(decoder_embed_dim,in_out_dim, bias=True)
         self.initialize_weights()
 
     def initialize_weights(self):
+        pos_embed = get_ts_sincos_pos_embed(self.pos_embed.shape[-1], int(self.window_size), cls_token=True)
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+        decoder_pos_embed = get_ts_sincos_pos_embed(self.decoder_pos_embed.shape[-1], int(self.window_size), cls_token=True)
+        self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
         w = self.conv1.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         torch.nn.init.normal_(self.cls_token, std=.02)
@@ -235,7 +232,52 @@ class STMAE_Pre(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def random_masking(self, x, mask_ratio,attn_mask,windows_len):
+    # def random_masking(self, x, mask_ratio,attn_mask,windows_len):
+    #     """
+    #     Perform per-sample random masking by per-sample shuffling.
+    #     Per-sample shuffling is done by argsort random noise.
+    #     x: [N, L, D], sequence
+    #     """
+    #     N, L, D = x.shape
+    #     len_keep = int(L * (1 - mask_ratio))
+    #     mask = torch.ones(N, L)  # 初始化全遮蔽    
+    #     # 为每个样本的窗口生成遮蔽
+    #     for i in range(N):
+    #         sum_len=0
+    #         start = 0
+    #         for win_len in windows_len[i]:
+    #             win_len = win_len.item()
+    #             end = start + win_len            
+    #             # 计算当前窗口需要保留的token数
+    #             keep = int(win_len * (1 - mask_ratio))
+    #             sum_len+=keep
+    #             # 生成窗口内的随机排列
+    #             perm = torch.randperm(win_len)
+    #             keep_indices = perm[:keep]  # 窗口内保留的位置
+    #             # 将保留位置的mask设为0
+    #             global_indices = start + keep_indices
+    #             mask[i, global_indices] = 0      
+    #             start = end
+    #         if len_keep-sum_len>0:
+    #             mask[i, -(len_keep-sum_len):] = 0
+
+    #     # sort noise for each sample
+    #     ids_shuffle = torch.argsort(mask, dim=1)
+    #     ids_restore = torch.argsort(ids_shuffle, dim=1).to(x.device)   
+    #     # keep the first subset
+    #     ids_keep = ids_shuffle[:, :len_keep].to(x.device)
+    #     x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+    #     if attn_mask is not None:
+    #         ids_keep_expanded = ids_keep.view(N, 1, len_keep, 1).expand(-1, 1, -1, L)
+    # # 提取保留行
+    #         attn_mask_rows = torch.gather(attn_mask, dim=2, index=ids_keep_expanded)        
+    #         # 提取保留列
+    #         ids_keep_expanded_col = ids_keep.view(N, 1, 1, len_keep).expand(-1, 1, len_keep, -1)
+    #         attn_mask_masked = torch.gather(attn_mask_rows, dim=3, index=ids_keep_expanded_col)
+    #     else:
+    #         attn_mask_masked = None
+    #     return x_masked, mask, ids_restore,attn_mask_masked
+    def random_masking(self, x, mask_ratio):
         """
         Perform per-sample random masking by per-sample shuffling.
         Per-sample shuffling is done by argsort random noise.
@@ -243,91 +285,85 @@ class STMAE_Pre(nn.Module):
         """
         N, L, D = x.shape
         len_keep = int(L * (1 - mask_ratio))
-        mask = torch.ones(N, L)  # 初始化全遮蔽    
-        # 为每个样本的窗口生成遮蔽
-        for i in range(N):
-            sum_len=0
-            start = 0
-            for win_len in windows_len[i]:
-                win_len = win_len.item()
-                end = start + win_len            
-                # 计算当前窗口需要保留的token数
-                keep = int(win_len * (1 - mask_ratio))
-                sum_len+=keep
-                # 生成窗口内的随机排列
-                perm = torch.randperm(win_len)
-                keep_indices = perm[:keep]  # 窗口内保留的位置
-                # 将保留位置的mask设为0
-                global_indices = start + keep_indices
-                mask[i, global_indices] = 0      
-                start = end
-            if len_keep-sum_len>0:
-                mask[i, -(len_keep-sum_len):] = 0
-
+        noise = torch.rand(N, L, device=x.device) 
+        
         # sort noise for each sample
-        ids_shuffle = torch.argsort(mask, dim=1)
-        ids_restore = torch.argsort(ids_shuffle, dim=1).to(x.device)   
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep].to(x.device)
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-        if attn_mask is not None:
-            ids_keep_expanded = ids_keep.view(N, 1, len_keep, 1).expand(-1, 1, -1, L)
-    # 提取保留行
-            attn_mask_rows = torch.gather(attn_mask, dim=2, index=ids_keep_expanded)        
-            # 提取保留列
-            ids_keep_expanded_col = ids_keep.view(N, 1, 1, len_keep).expand(-1, 1, len_keep, -1)
-            attn_mask_masked = torch.gather(attn_mask_rows, dim=3, index=ids_keep_expanded_col)
-        else:
-            attn_mask_masked = None
-        return x_masked, mask, ids_restore,attn_mask_masked
+        ids_shuffle = torch.argsort(noise, dim=1)
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-    def forward_encoder(self, x,attn_mask,batch_adjusted_lengths, mask_ratio):
-            x = x + self.pos_embed[:, 1:, :]
-            # masking: length -> length * mask_ratio
-            x, mask, ids_restore,attn_mask_masked = self.random_masking(x, mask_ratio,attn_mask,batch_adjusted_lengths)
-            attn_mask_masked=attn_mask_masked.to(x.device)
-            cls_token = self.cls_token + self.pos_embed[:, :1, :]
-            cls_tokens = cls_token.expand(x.shape[0], -1, -1)
-            x = torch.cat((cls_tokens, x), dim=1)
-            for blk in self.blocks:
-                x = blk(x)
-            x = self.norm(x)
-            return x, mask, ids_restore
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=x.device)
+        mask[:, :len_keep] = 0 
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_masked, mask, ids_restore
     
-    def forward_decoder(self, x, ids_restore,attn_mask):
+    def forward_encoder(self, x, mask_ratio):
+        x = x + self.pos_embed[:, 1:, :]
+        # masking: length -> length * mask_ratio
+        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        # append cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        return x, mask, ids_restore
+    
+    def forward_decoder(self, x,ids_restore):
         # embed tokens
         x = self.decoder_embed(x)
+        # append mask tokens to sequence
         mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1) 
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
         x = torch.cat([x[:, :1, :], x_], dim=1)
         # add pos embed
         x = x + self.decoder_pos_embed
+        # apply Transformer blocks
         for blk in self.decoder_blocks:
             x = blk(x)
         x = self.decoder_norm(x)
+        # predictor projection
         x = self.decoder_pred(x)
+        # remove cls token
+        x = x[:, 1:, :]
+
         return x
 
-    def forward(self, imgs,attn_mask,batch_adjusted_lengths): 
+    def forward(self, imgs): 
         imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], self.node_num, -1)
         imgs = imgs.permute(0, 2, 1 ,3)
+
+        mask = torch.zeros(imgs.shape[0], imgs.shape[1], dtype=torch.bool).to(imgs.device)
+        noise = torch.rand(imgs.shape[0], imgs.shape[1]).to(imgs.device)
+        _, indices = torch.topk(noise, self.len_mask, dim=1)
+        mask.scatter_(1, indices, True)
+        mask_expanded = mask.unsqueeze(-1).unsqueeze(-1).expand_as(imgs)
+        imgs[mask_expanded] = 0
+
         x = imgs.permute(0, 3, 1, 2)
         x = self.bn1(self.conv1(x))
         x = x.squeeze()
         x = x.permute(0, 2, 1)
-        # 编码器-解码器流程
-        latent, mask, ids_restore = self.forward_encoder(x, attn_mask,batch_adjusted_lengths,mask_ratio=self.mask_ratio)
-        pred = self.forward_decoder(latent, ids_restore,attn_mask)
-        
+
+        latent, mask, ids_restore = self.forward_encoder(x, mask_ratio=self.mask_ratio)
+        pred = self.forward_decoder(latent, ids_restore)
         imgs = imgs.permute(0, 2, 1, 3)
         imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], -1)
-        idx = mask.nonzero()  # 获取被遮蔽的位置索引
-        pred = pred[idx[:, 0], idx[:, 1], :]  # 提取预测中被遮蔽的部分
-        imgs= imgs[idx[:, 0], idx[:, 1], :]
-        # 调整输出形状（保持批次维度）
-        pred = pred.reshape(x.shape[0], -1, pred.shape[1])  # (N, num_masked, D)
-        imgs= imgs.reshape(x.shape[0], -1, imgs.shape[1])  # (N, num_masked, D)
+
+        idx = mask.nonzero()
+        pred = pred[idx[:, 0], idx[:, 1], :]
+        imgs = imgs[idx[:, 0], idx[:, 1], :]
+        pred = pred.reshape(x.shape[0], -1, pred.shape[1])
+        imgs = imgs.reshape(x.shape[0], -1, imgs.shape[1])
+
         return imgs, pred
 
 class STMAE_Finetune(nn.Module):

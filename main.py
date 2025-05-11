@@ -23,11 +23,11 @@ def custom_collate_fn(
 ) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor]:
         # 处理每个样本并计算调整后的长度
     processed_items = []
-    for item, index, label in batch:
+    for item, index in batch:
         adjusted_len= item.shape[-1]  # 原始序列长度 (L)
         # 将 ( C, L) 转换为 T 个 ( C, L)
         for t in range(item.shape[0]):
-            processed_items.append((item[t], adjusted_len, label, index))        
+            processed_items.append((item[t], adjusted_len, index))        
     random.shuffle(processed_items)         
     packed_batch = []   #数据
     packed_labels = []  #标签
@@ -42,7 +42,7 @@ def custom_collate_fn(
     indices=[]
     ptr = 0 
     id=0# 当前写入位置指针
-    for item,adjusted_len_one_channel ,label,index in processed_items:
+    for item,adjusted_len_one_channel ,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
         #( C, L)
         adjusted_len = adjusted_len_one_channel
@@ -57,7 +57,7 @@ def custom_collate_fn(
                 concatenated = buffer[:, :ptr].copy()
                 concatenated =torch.from_numpy(concatenated)
                 packed_batch.append(concatenated.permute(1,0))
-                packed_labels.append(torch.tensor(labels))
+                # packed_labels.append(torch.tensor(labels))
                 packed_adjusted_lengths.append(torch.tensor(lengths))
                 packed_indices.append(torch.tensor(indices))  
                 batched_image_ids.append(torch.tensor(image_ids))     
@@ -74,7 +74,7 @@ def custom_collate_fn(
             id=id+1
             buffer[ :, ptr:ptr+sub_len] = item
             ptr += sub_len
-            labels.append(label)
+            # labels.append(label)
             lengths.append(sub_len)
             indices.append(index)
             image_ids.extend([id] * sub_len)
@@ -83,7 +83,7 @@ def custom_collate_fn(
         concatenated = buffer[:, :ptr].copy() 
         concatenated =torch.from_numpy(concatenated)
         packed_batch.append(concatenated.permute(1,0))
-        packed_labels.append(torch.tensor(labels))
+        # packed_labels.append(torch.tensor(labels))
         packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
         packed_indices.append(torch.tensor(indices))  
         batched_image_ids.append(torch.tensor(image_ids))    
@@ -101,7 +101,6 @@ def custom_collate_fn(
     packed_batch = pad_sequence(packed_batch,batch_first=True)
     attn_mask = attn_mask & rearrange(key_pad_mask, 'b j -> b 1 1 j')#这就是最终要的mask
     return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask
-
 
 
 def pre_train(args, data_train):
@@ -124,14 +123,13 @@ def pre_train(args, data_train):
     trainer = train.Trainer(model, optimizer, args.save_path, get_device(args.gpu), args)
 
     def func_loss(model, batch,mask,batch_adjusted_lengths):
-        # data, _ = batch
         data=batch
-        seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
+        # seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
+        seqs, seq_recon = model(data)
         loss = criterion(seq_recon, seqs)
         return loss
 
     def func_forward(model, batch):
-        # data, _ = batch
         data=batch
         seqs, seq_recon = model(data)
         return seq_recon, seqs
