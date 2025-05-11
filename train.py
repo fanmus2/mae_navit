@@ -7,7 +7,7 @@ import time
 from timm.layers import trunc_normal_
 from typing import List, Tuple, Optional, Callable
 from torch.nn.utils.rnn import pad_sequence 
-
+import matplotlib.pyplot as plt
 class Trainer(object):
     """Training Helper Class"""
     def __init__(self, model, optimizer, save_path, device, args=None):
@@ -28,7 +28,7 @@ class Trainer(object):
         global_step = 0 # global iteration steps regardless of epochs
         best_loss = 1e6
         # model_best = model.state_dict()
-        
+        train_losses = []
         for e in range(self.args.epoch):
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()    
@@ -41,17 +41,23 @@ class Trainer(object):
                 loss = func_loss(model, batch,attn_mask,batch_adjusted_lengths)  
                 loss = loss.mean()
                 loss.backward()      
-                total_grad_norm = 0.0
                 self.optimizer.step()
                 global_step += 1
                 loss_sum += loss.item()
             print('Epoch %d/%d : Train Loss %5.4f'
                     % (e + 1, self.args.epoch, loss_sum / len(data_loader_train)))
-            
+            train_losses.append(loss_sum / len(data_loader_train))
             writer.add_scalar('pre_loss/loss_train', loss_sum / len(data_loader_train), global_step=e + 1)
         # self.model.load_state_dict(model_best)
         print('The Total Epoch have been reached.')
-
+        plt.plot(train_losses)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss Curve')
+        plt.grid(True)
+        save_path = 'train_loss_3_channel.png'  # You can specify your own path and filename
+        plt.savefig(save_path)
+        plt.show()
 
     def fine_tuning(self, func_loss, func_forward, func_evaluate, 
                     data_loader_train, data_loader_valid, data_loader_test, 

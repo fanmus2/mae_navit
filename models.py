@@ -194,7 +194,8 @@ class STMAE_Pre(nn.Module):
         self.mask_ratio = mask_ratio
         self.window_size = window_size
         self.node_num = node_num
-        self.conv1 = nn.Conv2d(node_dim, embed_dim, kernel_size=(self.node_num, 5), stride=1, padding=(0, 2))
+        # self.conv1 = nn.Conv2d(node_dim, embed_dim, kernel_size=(self.node_num, 5), stride=1, padding=(0, 2))
+        self.conv1 = nn.Conv2d(3, embed_dim, kernel_size=(1, 3), stride=1, padding=(0, 1))
         self.bn1 = nn.BatchNorm2d(embed_dim)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -317,15 +318,16 @@ class STMAE_Pre(nn.Module):
         return x
 
     def forward(self, imgs,attn_mask,batch_adjusted_lengths): 
-        imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], self.node_num, -1)
+        # imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], self.node_num, -1)
+        imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], 1,-1)
         imgs = imgs.permute(0, 2, 1 ,3)
 
-        mask = torch.zeros(imgs.shape[0], imgs.shape[1], dtype=torch.bool).to(imgs.device)
-        noise = torch.rand(imgs.shape[0], imgs.shape[1]).to(imgs.device)
-        _, indices = torch.topk(noise, self.len_mask, dim=1)
-        mask.scatter_(1, indices, True)
-        mask_expanded = mask.unsqueeze(-1).unsqueeze(-1).expand_as(imgs)
-        imgs[mask_expanded] = 0
+        # mask = torch.zeros(imgs.shape[0], imgs.shape[1], dtype=torch.bool).to(imgs.device)
+        # noise = torch.rand(imgs.shape[0], imgs.shape[1]).to(imgs.device)
+        # _, indices = torch.topk(noise, self.len_mask, dim=1)
+        # mask.scatter_(1, indices, True)
+        # mask_expanded = mask.unsqueeze(-1).unsqueeze(-1).expand_as(imgs)
+        # imgs[mask_expanded] = 0
 
         x = imgs.permute(0, 3, 1, 2)
         x = self.bn1(self.conv1(x))

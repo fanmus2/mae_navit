@@ -45,9 +45,18 @@ def custom_collate_fn(
     for item,adjusted_len_one_channel ,index in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
         #( C, L)
-        adjusted_len = adjusted_len_one_channel
-        adjusted_len = min(adjusted_len, max_seq_len)  # 限制总长度     
+        # adjusted_len = adjusted_len_one_channel
+ # 限制总长度     
         # 拆分并合并通道
+        C = item.shape[0]  # 通道数
+        assert C % 3 == 0, f"通道数必须是3的倍数，当前为{C}."
+        n = C // 3
+        adjusted_len = n * adjusted_len_one_channel
+        adjusted_len = min(adjusted_len, max_seq_len) 
+        # 拆分并合并通道
+        item = item.reshape(1, n, 3, adjusted_len_one_channel)
+        item = np.transpose(item, (0, 2, 1, 3))  # (1, 3, n, adjusted_len_one_channel)
+        item = item.reshape( 3, -1)  # (1, 3, adjusted_len)        
         item=item[:,0:adjusted_len]
         sub_len = adjusted_len   
         # 在打包逻辑中:
