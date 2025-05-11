@@ -112,7 +112,7 @@ def custom_collate_fn(
     return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask
 
 
-def pre_train(args, data_train):
+def pre_train(args, data_train,data_val):
     collate_with_dropout = partial(
         custom_collate_fn,
         calc_token_dropout=None,  
@@ -122,7 +122,15 @@ def pre_train(args, data_train):
         data_train,
         batch_size=args.batch_size,  # 设置批次大小
         shuffle=True,
-        num_workers=1,
+        num_workers=4,
+        collate_fn=collate_with_dropout,
+        pin_memory=True# 使用自定义 collate 函数
+    )
+    data_set_val = DataLoader(
+        data_val,
+        batch_size=args.batch_size,  # 设置批次大小
+        shuffle=True,
+        num_workers=4,
         collate_fn=collate_with_dropout,
         pin_memory=True# 使用自定义 collate 函数
     )
@@ -138,9 +146,10 @@ def pre_train(args, data_train):
         loss = criterion(seq_recon, seqs)
         return loss
 
-    def func_forward(model, batch):
+    def func_forward(model, batch,mask,batch_adjusted_lengths):
         data=batch
-        seqs, seq_recon = model(data)
+        seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
+
         return seq_recon, seqs
 
     def func_evaluate(seqs, predict_seqs):
@@ -150,7 +159,7 @@ def pre_train(args, data_train):
     log_path = os.path.join('check', args.dataset, args.path)
     writer = SummaryWriter(log_path)
 
-    trainer.pretrain(func_loss, func_forward, func_evaluate, data_set_train,
+    trainer.pretrain(func_loss, func_forward, func_evaluate, data_set_train,data_set_val,
                      model_file=args.pretrain_model, writer=writer)
 
 def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test):
@@ -190,10 +199,13 @@ def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data
 if __name__ == "__main__":
     args = handle_argv_pre_train()
     data_train = ImageFolder(
-        root="../data_split_opp",
+        root="../data_split_opp_train",
+)
+    data_val = ImageFolder(
+        root="../data_split_opp_val",
 )
     print("start pre-train\n")
-    pre_train(args, data_train)
+    pre_train(args, data_train,data_val)
     #先把预训练部分搞出来 微调先注释了
     # print("start fine-tuning\n")
     # args = handle_argv_finetune(args)

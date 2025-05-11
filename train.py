@@ -18,7 +18,7 @@ class Trainer(object):
         self.args = args
 
     def pretrain(self, func_loss, func_forward, func_evaluate, 
-                 data_loader_train, 
+                 data_loader_train,data_loader_val, 
                  model_file=None, data_parallel=False, writer=None):
         """ Train Loop """
         self.load(model_file)
@@ -27,12 +27,13 @@ class Trainer(object):
             model = nn.DataParallel(model)
         global_step = 0 # global iteration steps regardless of epochs
         best_loss = 1e6
-        # model_best = model.state_dict()
+        model_best = model.state_dict()
         train_losses = []
+        val_losses = [] 
         for e in range(self.args.epoch):
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()    
-            # start_time1 = time.time()    
+   
             for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader_train:
                   
                 batch = batch.to(self.device)
@@ -44,18 +45,31 @@ class Trainer(object):
                 self.optimizer.step()
                 global_step += 1
                 loss_sum += loss.item()
-            print('Epoch %d/%d : Train Loss %5.4f'
-                    % (e + 1, self.args.epoch, loss_sum / len(data_loader_train)))
+                
+            loss_eva = self.run(func_forward, func_evaluate, data_loader_val)
+            val_losses.append(loss_eva)
             train_losses.append(loss_sum / len(data_loader_train))
+            print('Epoch %d/%d : Train Loss %5.4f. Valid Loss %5.4f'
+                    % (e + 1, self.args.epoch, loss_sum / len(data_loader_train), loss_eva))
             writer.add_scalar('pre_loss/loss_train', loss_sum / len(data_loader_train), global_step=e + 1)
-        # self.model.load_state_dict(model_best)
+            writer.add_scalar('pre_loss/loss_eva', loss_eva, global_step=e + 1)
+            if loss_eva < best_loss:
+                best_loss = loss_eva
+                model_best = copy.deepcopy(model.state_dict())
+                self.save(0)
+
+        self.model.load_state_dict(model_best)
         print('The Total Epoch have been reached.')
-        plt.plot(train_losses)
+    # 绘制训练集和验证集的损失曲线
+        plt.figure(figsize=(10, 5))
+        plt.plot(train_losses, label='Training Loss')
+        plt.plot(val_losses, label='Validation Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title('Training Loss Curve')
+        plt.title('Training and Validation Loss Curves')
+        plt.legend()
         plt.grid(True)
-        save_path = 'train_loss_3_channel.png'  # You can specify your own path and filename
+        save_path = 'train_val_loss.png'  # You can specify your own path and filename
         plt.savefig(save_path)
         plt.show()
 
@@ -124,13 +138,14 @@ class Trainer(object):
             results = [] # prediction results
             labels = []
             loss_sum = 0.0
-            for batch in data_loader:
-                batch = [t.to(self.device) for t in batch]
+            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader:
+                batch = batch.to(self.device)
+                attn_mask=attn_mask.to(self.device)
                 with torch.no_grad(): # evaluation without gradient calculation
-                    result, label = func_forward(model, batch)
+                    result, label = func_forward(model, batch,attn_mask,batch_adjusted_lengths)
                     results.append(result)
                     labels.append(label)
-                    loss = func_loss(model, batch)
+                    loss = func_loss(model, batch,attn_mask,batch_adjusted_lengths)
                     loss = loss.mean()
                     loss_sum += loss.item()
             loss_data = loss_sum / len(data_loader)
@@ -141,10 +156,11 @@ class Trainer(object):
         else:
             results = [] # prediction results
             labels = []
-            for batch in data_loader:
-                batch = [t.to(self.device) for t in batch]
+            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader:
+                batch = batch.to(self.device)
+                attn_mask=attn_mask.to(self.device)
                 with torch.no_grad(): # evaluation without gradient calculation
-                    result, label = func_forward(model, batch)
+                    result, label = func_forward(model, batch,attn_mask,batch_adjusted_lengths)
                     results.append(result)
                     labels.append(label)
             if func_evaluate:
