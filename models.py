@@ -3,16 +3,23 @@ import torch.nn as nn
 import numpy as np
 from einops import rearrange
 import torch.nn.functional as F
+from functools import partial
 from timm.models.vision_transformer import Block
 from typing import  Optional ,Type
 from typing import  Optional
 from timm.layers import  Mlp, DropPath
 from torch.jit import Final
+from einops import rearrange, repeat
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD, \
     OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 from timm.layers import PatchEmbed, Mlp, DropPath, AttentionPoolLatent, RmsNorm, PatchDropout, SwiGLUPacked, SwiGLU, \
     trunc_normal_, lecun_normal_, resample_patch_embed, resample_abs_pos_embed, use_fused_attn, \
     get_act_layer, get_norm_layer, LayerType
+def exists(val):
+    return val is not None   
+def default(val, d):
+    return val if exists(val) else d
+
 class LayerNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -68,7 +75,7 @@ class Attention(nn.Module):
             proj_bias: bool = True,
             attn_drop: float = 0.3,
             proj_drop: float = 0.3,
-            norm_layer: Type[nn.Module] = RMSNorm,
+            norm_layer=RMSNorm,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -76,18 +83,25 @@ class Attention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
         self.fused_attn = use_fused_attn()
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) 
-        self.k_norm = norm_layer(self.head_dim) 
+        self.norm = LayerNorm(dim)
+        # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.q_norm = RMSNorm(self.num_heads,dim=self.head_dim) 
+        self.k_norm = RMSNorm(heads=self.num_heads,dim=self.head_dim) 
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self.to_q = nn.Linear(dim, dim, bias = qkv_bias)
+        self.to_kv = nn.Linear(dim, dim * 2, bias = qkv_bias)
+    def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None,attn_mask_fintune: Optional[torch.Tensor] = None,context=None) -> torch.Tensor:
+        x = self.norm(x)
+        kv_input = default(context, x)
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
+        # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1))
+        q, k, v = map(
+            lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.num_heads), qkv
+        )
+        # q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.fused_attn:
@@ -109,6 +123,18 @@ class Attention(nn.Module):
                 # 替换原始的掩码
                 attn_mask = new_attn_mask
                 attn = attn.masked_fill(~attn_mask, float('-inf'))  # ~ 表示逻辑非
+                
+            if attn_mask_fintune is not None:
+                original_n = attn_mask_fintune.shape[-1]
+                new_n = original_n + 1
+                # 创建一个新的掩码，形状为 (N, 1, new_n, new_n) 并且所有值都为 True
+                new_attn_mask_fintune = torch.full((B, 1, attn_mask_fintune.shape[-2], new_n), True, dtype=torch.bool, device=attn_mask_fintune.device)                
+                # 如果需要保留原始掩码的部分，可以直接复制过来
+                new_attn_mask_fintune[..., 1:] = attn_mask_fintune
+                # 替换原始的掩码
+                attn_mask_fintune = new_attn_mask_fintune
+                attn = attn.masked_fill(~attn_mask_fintune, float('-inf'))  # ~ 表示逻辑非    
+                
             attn = attn.softmax(dim=-1)
             attn=torch.where(torch.isnan(attn),torch.full_like(attn,0),attn)
             attn = self.attn_drop(attn)
@@ -357,7 +383,7 @@ class STMAE_Finetune(nn.Module):
 
         self.window_size = window_size
         self.node_num = node_num
-        self.conv1 = nn.Conv2d(node_dim, embed_dim, kernel_size=(self.node_num, 5), stride=1, padding=(0, 2))
+        self.conv1 = nn.Conv2d(node_dim, embed_dim, kernel_size=(self.node_num, 3), stride=1, padding=(0, 1))
         self.bn1 = nn.BatchNorm2d(embed_dim)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -366,6 +392,8 @@ class STMAE_Finetune(nn.Module):
             Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
+        self.attn_pool_queries = nn.Parameter(torch.randn(embed_dim))
+        self.attn_pool = Attention(embed_dim, num_heads = 2)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -405,16 +433,33 @@ class STMAE_Finetune(nn.Module):
 
         return x
 
-    def forward(self, imgs):
+    def forward(self, imgs,num_images,batched_image_ids,key_pad_mask):
+        
         imgs = imgs.reshape(imgs.shape[0], imgs.shape[1], self.node_num, -1)
         imgs = imgs.permute(0, 2, 1 ,3) 
-
         x = imgs.permute(0, 3, 1, 2)
+        arange = partial(torch.arange, device = x.device)
+        num_images=num_images.to(x.device)
+        batched_image_ids=batched_image_ids.to(x.device)
+        key_pad_mask=key_pad_mask.to(x.device)
         x = self.bn1(self.conv1(x))
         x = x.squeeze()
         x = x.permute(0, 2, 1)
         x = self.forward_encoder_full(x)
-        x= x.mean(dim=1)
+        max_queries = num_images.amax().item()
+        queries = repeat(self.attn_pool_queries, 'd -> b n d', n = max_queries, b = x.shape[0])
+        #attention pool mask
+        image_id_arange = arange(max_queries)
+        attn_pool_mask = rearrange(image_id_arange, 'i -> i 1') == rearrange(batched_image_ids, 'b j -> b 1 j')
+        attn_pool_mask = attn_pool_mask & rearrange(key_pad_mask, 'b j -> b 1 j')
+        attn_pool_mask = rearrange(attn_pool_mask, 'b i j -> b 1 i j')
+        #attention pool
+        x = self.attn_pool(queries, attn_mask_fintune = attn_pool_mask, context = x) + queries
+        x = rearrange(x, 'b n d -> (b n) d')
+     #each batch element may not have same amount of images
+        is_images = image_id_arange < rearrange(num_images, 'b -> b 1')
+        is_images = rearrange(is_images, 'b n -> (b n)')
+        x = x[is_images]
         x = self.head(x)
 
         return x
@@ -446,12 +491,12 @@ def get_ts_sincos_pos_embed(embed_dim, window_size, cls_token=False):
 def fetch_classifier(method, args=None):
     if 'STMAE_Pre' in method:
         model = STMAE_Pre(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio, 
-        norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.maxlen, node_num=args.dataset_cfg.node_num,
+        norm_layer=nn.LayerNorm, node_dim=3, window_size=args.maxlen, node_num=1,
         decoder_embed_dim=args.decoder_embed_dim, decoder_depth=args.decoder_depth, decoder_num_heads=args.decoder_num_heads, 
         mask_ratio=args.mask_ratio, len_mask=args.len_mask,proj_drop=args.proj_drop,attn_drop=args.attn_drop,in_out_dim=args.in_out_dim)
     elif 'STMAE_Finetune' in method:
         model = STMAE_Finetune(embed_dim=args.embed_dim, depth=args.depth, num_heads=args.num_heads, mlp_ratio=args.mlp_ratio,
-        norm_layer=nn.LayerNorm, node_dim=args.dataset_cfg.node_dim, window_size=args.dataset_cfg.seq_len, node_num=args.dataset_cfg.node_num, num_classes=args.dataset_cfg.activity_label_size)
+        norm_layer=nn.LayerNorm, node_dim=3, window_size=args.maxlen, node_num=1, num_classes=args.dataset_cfg.activity_label_size)
     else:
         model = None
     return model

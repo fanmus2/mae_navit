@@ -3,7 +3,7 @@ from tkinter import NO
 from einops import rearrange
 import torch
 import torch.nn as nn
-import time
+import numpy as np
 from timm.layers import trunc_normal_
 from typing import List, Tuple, Optional, Callable
 from torch.nn.utils.rnn import pad_sequence 
@@ -34,7 +34,7 @@ class Trainer(object):
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()    
    
-            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader_train:
+            for (batch,_, batch_adjusted_lengths,_,attn_mask,_,_,_) in data_loader_train:
                   
                 batch = batch.to(self.device)
                 self.optimizer.zero_grad()
@@ -46,7 +46,7 @@ class Trainer(object):
                 global_step += 1
                 loss_sum += loss.item()
                 
-            loss_eva = self.run(func_forward, func_evaluate, data_loader_val)
+            loss_eva = self.run(func_forward, func_evaluate, data_loader_val,id=0)
             val_losses.append(loss_eva)
             train_losses.append(loss_sum / len(data_loader_train))
             print('Epoch %d/%d : Train Loss %5.4f. Valid Loss %5.4f'
@@ -89,21 +89,22 @@ class Trainer(object):
         for e in range(self.args.fine_epoch):
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()
-            for _, batch in enumerate(data_loader_train):
-                batch = [t.to(self.device) for t in batch]
+            for (batch,label, _,_,attn_mask,batched_image_ids,num_images,key_pad_mask) in data_loader_train:
+                batch = batch.to(self.device)
                 attn_mask = attn_mask.to(self.device)
+                label=torch.from_numpy(np.concatenate(label)).long()
+                label=label.to(self.device)
                 self.optimizer.zero_grad()
-                loss = func_loss(model, batch)
-
+                loss = func_loss(model, batch,label,num_images,batched_image_ids,key_pad_mask)  
                 loss = loss.mean()
                 loss.backward()
                 self.optimizer.step()
                 global_step += 1
                 loss_sum += loss.item()
 
-            train_acc, train_f1 = self.run(func_forward, func_evaluate, data_loader_train)
-            vali_acc, vali_f1, loss_vali = self.run(func_forward, func_evaluate, data_loader_valid, func_loss=func_loss)
-            test_acc, test_f1, loss_test = self.run(func_forward, func_evaluate, data_loader_test, func_loss=func_loss)
+            train_acc, train_f1 = self.run(func_forward, func_evaluate, data_loader_train,id=1)
+            vali_acc, vali_f1, loss_vali = self.run(func_forward, func_evaluate, data_loader_valid, func_loss=func_loss,id=1)
+            test_acc, test_f1, loss_test = self.run(func_forward, func_evaluate, data_loader_test, func_loss=func_loss,id=1)
             print('Epoch %d/%d : Average Loss %5.4f/%5.4f/%5.4f, Accuracy: %6.4f/%6.4f/%6.4f, F1: %6.4f/%6.4f/%6.4f'
                   % (e+1, self.args.fine_epoch, loss_sum / len(data_loader_train), loss_vali, loss_test, 
                      train_acc*100, vali_acc*100, test_acc*100, train_f1*100, vali_f1*100, test_f1*100))
@@ -126,7 +127,7 @@ class Trainer(object):
         self.model.load_state_dict(model_best)
         print('The Total Epoch have been reached.')
 
-    def run(self, func_forward, func_evaluate, data_loader, model_file=None, data_parallel=False, func_loss=None):
+    def run(self, func_forward, func_evaluate, data_loader, model_file=None, data_parallel=False, func_loss=None,id=0):
         """ Evaluation Loop """
         self.model.eval() # evaluation mode
         self.load(model_file)
@@ -138,14 +139,23 @@ class Trainer(object):
             results = [] # prediction results
             labels = []
             loss_sum = 0.0
-            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader:
+            for (batch,paceked_labels, batch_adjusted_lengths,_,attn_mask,batched_image_ids,num_images,key_pad_mask) in data_loader:
                 batch = batch.to(self.device)
                 attn_mask=attn_mask.to(self.device)
                 with torch.no_grad(): # evaluation without gradient calculation
-                    result, label = func_forward(model, batch,attn_mask,batch_adjusted_lengths)
+                    if id==0:     
+                        result, label = func_forward(model,batch,attn_mask,batch_adjusted_lengths)
+                    elif id==1:
+                        paceked_labels=torch.from_numpy(np.concatenate(paceked_labels)).long()
+                        paceked_labels=paceked_labels.to(self.device)
+                        result, label = func_forward(model,batch,paceked_labels,num_images,batched_image_ids,key_pad_mask)
                     results.append(result)
                     labels.append(label)
-                    loss = func_loss(model, batch,attn_mask,batch_adjusted_lengths)
+                    if id==0:     
+                         loss = func_loss(model,batch,attn_mask,batch_adjusted_lengths)
+                    elif id==1:
+                        label=label.to(self.device)
+                        loss = func_loss(model,batch,label,num_images,batched_image_ids,key_pad_mask)                
                     loss = loss.mean()
                     loss_sum += loss.item()
             loss_data = loss_sum / len(data_loader)
@@ -156,11 +166,16 @@ class Trainer(object):
         else:
             results = [] # prediction results
             labels = []
-            for (batch,_, batch_adjusted_lengths,_,attn_mask) in data_loader:
+            for (batch,paceked_labels, batch_adjusted_lengths,_,attn_mask,batched_image_ids,num_images,key_pad_mask) in data_loader:
                 batch = batch.to(self.device)
                 attn_mask=attn_mask.to(self.device)
                 with torch.no_grad(): # evaluation without gradient calculation
-                    result, label = func_forward(model, batch,attn_mask,batch_adjusted_lengths)
+                    if id==0:     
+                        result, label = func_forward(model,batch,attn_mask,batch_adjusted_lengths)
+                    elif id==1:
+                        paceked_labels=torch.from_numpy(np.concatenate(paceked_labels)).long()
+                        paceked_labels=paceked_labels.to(self.device)
+                        result, label = func_forward(model,batch,paceked_labels,num_images,batched_image_ids,key_pad_mask)
                     results.append(result)
                     labels.append(label)
             if func_evaluate:

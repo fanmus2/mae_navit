@@ -17,17 +17,18 @@ from typing import List, Tuple, Optional, Callable
 from torch.nn.utils.rnn import pad_sequence 
 
 def custom_collate_fn(
-    batch: List[Tuple[np.array, int, int]],
+    batch: Tuple[any,any,any],
     calc_token_dropout: Optional[Callable] = None,
     max_seq_len: int = 1024
-) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor]:
+) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor,torch.tensor,torch.tensor,torch.tensor]:
+    num_images=[]
         # 处理每个样本并计算调整后的长度
-    processed_items = []
-    for item, index in batch:
-        adjusted_len= item.shape[-1]  # 原始序列长度 (L)
-        # 将 ( C, L) 转换为 T 个 ( C, L)
+    processed_items = [] 
+    for item, index,label in batch:
+        adjusted_len= item.shape[-2]  # 原始序列长度 (L)
+        # 将 ( T,L, C) 转换为 T 个 ( L, C)
         for t in range(item.shape[0]):
-            processed_items.append((item[t], adjusted_len, index))        
+            processed_items.append((item[t], adjusted_len, index,label[t]))        
     random.shuffle(processed_items)         
     packed_batch = []   #数据
     packed_labels = []  #标签
@@ -35,41 +36,40 @@ def custom_collate_fn(
     packed_indices = [] #标记来源于哪个数据集
     batched_image_ids=[]    #id 用于区分一个序列内 的不同数据窗
     
-    buffer = np.empty((args.in_out_dim, max_seq_len), dtype=np.float32)
+    buffer = np.empty((max_seq_len,args.in_out_dim), dtype=np.float32)
     labels=[]
     lengths=[]
     image_ids=[]
     indices=[]
     ptr = 0 
     id=0# 当前写入位置指针
-    for item,adjusted_len_one_channel ,index in processed_items:
+    for item,adjusted_len_one_channel ,index,label in processed_items:
         #  计算合并后的总长度 (n * adjusted_len_one_channel)
-        #( C, L)
         # adjusted_len = adjusted_len_one_channel
  # 限制总长度     
         # 拆分并合并通道
-        C = item.shape[0]  # 通道数
+        C = item.shape[1]  # 通道数
         assert C % 3 == 0, f"通道数必须是3的倍数，当前为{C}."
         n = C // 3
         adjusted_len = n * adjusted_len_one_channel
         adjusted_len = min(adjusted_len, max_seq_len) 
         # 拆分并合并通道
-        item = item.reshape(1, n, 3, adjusted_len_one_channel)
-        item = np.transpose(item, (0, 2, 1, 3))  # (1, 3, n, adjusted_len_one_channel)
-        item = item.reshape( 3, -1)  # (1, 3, adjusted_len)        
-        item=item[:,0:adjusted_len]
+        item = item.reshape(adjusted_len_one_channel, n, 3) 
+        item = item.reshape(-1 ,3)  # ( adjusted_len,3)        
+        item=item[0:adjusted_len,:]
         sub_len = adjusted_len   
         # 在打包逻辑中:
         if ptr + sub_len > max_seq_len:
             if ptr > 0:
                 # 截取有效数据
-                concatenated = buffer[:, :ptr].copy()
+                concatenated = buffer[ :ptr,:].copy()
                 concatenated =torch.from_numpy(concatenated)
-                packed_batch.append(concatenated.permute(1,0))
-                # packed_labels.append(torch.tensor(labels))
+                packed_batch.append(concatenated)
+                packed_labels.append(torch.tensor(labels))
                 packed_adjusted_lengths.append(torch.tensor(lengths))
                 packed_indices.append(torch.tensor(indices))  
-                batched_image_ids.append(torch.tensor(image_ids))     
+                batched_image_ids.append(torch.tensor(image_ids))
+                num_images.append(image_ids[-1])  
                 # 重置指针
                 ptr = 0
                 id=0
@@ -81,21 +81,22 @@ def custom_collate_fn(
         # 添加新元素时:
         if ptr + sub_len <=max_seq_len:
             id=id+1
-            buffer[ :, ptr:ptr+sub_len] = item
+            buffer[ ptr:ptr+sub_len, :] = item
             ptr += sub_len
-            # labels.append(label)
+            labels.append(label)
             lengths.append(sub_len)
             indices.append(index)
             image_ids.extend([id] * sub_len)
     if ptr > 0:
 # 截取有效数据
-        concatenated = buffer[:, :ptr].copy() 
+        concatenated = buffer[:ptr,:].copy() 
         concatenated =torch.from_numpy(concatenated)
-        packed_batch.append(concatenated.permute(1,0))
-        # packed_labels.append(torch.tensor(labels))
+        packed_batch.append(concatenated)
+        packed_labels.append(torch.tensor(labels))
         packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
         packed_indices.append(torch.tensor(indices))  
-        batched_image_ids.append(torch.tensor(image_ids))    
+        batched_image_ids.append(torch.tensor(image_ids)) 
+        num_images.append(image_ids[-1])     
     #(L,c)       
     batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
     #注意力 掩码 用来将一个序列内 不同窗独立开来 
@@ -109,7 +110,8 @@ def custom_collate_fn(
     #记录有效值 下面就padding
     packed_batch = pad_sequence(packed_batch,batch_first=True)
     attn_mask = attn_mask & rearrange(key_pad_mask, 'b j -> b 1 1 j')#这就是最终要的mask
-    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask
+    num_images=torch.tensor(num_images)
+    return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask,batched_image_ids,num_images,key_pad_mask
 
 
 def pre_train(args, data_train,data_val):
@@ -146,7 +148,7 @@ def pre_train(args, data_train,data_val):
         loss = criterion(seq_recon, seqs)
         return loss
 
-    def func_forward(model, batch,mask,batch_adjusted_lengths):
+    def func_forward(model,batch,mask,batch_adjusted_lengths):
         data=batch
         seqs, seq_recon = model(data,mask, batch_adjusted_lengths)
 
@@ -162,28 +164,48 @@ def pre_train(args, data_train,data_val):
     trainer.pretrain(func_loss, func_forward, func_evaluate, data_set_train,data_set_val,
                      model_file=args.pretrain_model, writer=writer)
 
-def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test):
-    data_set_train = IMUDataset(data_train_l, label_train_l)
-    data_set_valid = IMUDataset(data_valid, label_valid)
-    data_set_test = IMUDataset(data_test, label_test)
-    data_loader_train = DataLoader(data_set_train, shuffle=True, batch_size=args.batch_size)
-    data_loader_valid = DataLoader(data_set_valid, shuffle=False, batch_size=args.batch_size)
-    data_loader_test = DataLoader(data_set_test, shuffle=False, batch_size=args.batch_size)
-
+def fine_tuning(args, data_train_l,data_valid,data_test):
+    collate_with_dropout = partial(
+        custom_collate_fn,
+        calc_token_dropout=None,  
+        max_seq_len=args.maxlen
+    )
+    data_loader_train = DataLoader(
+        data_train_l,
+        batch_size=args.batch_size,  # 设置批次大小
+        shuffle=True,
+        num_workers=4,
+        collate_fn=collate_with_dropout,
+        pin_memory=True# 使用自定义 collate 函数
+    )
+    data_loader_test = DataLoader(
+        data_test,
+        batch_size=args.batch_size,  # 设置批次大小
+        shuffle=True,
+        num_workers=4,
+        collate_fn=collate_with_dropout,
+        pin_memory=True# 使用自定义 collate 函数
+    )   
+    data_loader_valid = DataLoader(
+        data_valid,
+        batch_size=args.batch_size,  # 设置批次大小
+        shuffle=True,
+        num_workers=4,
+        collate_fn=collate_with_dropout,
+        pin_memory=True# 使用自定义 collate 函数
+    )   
     criterion = nn.CrossEntropyLoss()
     model = fetch_classifier("STMAE_Finetune", args=args)
     optimizer = torch.optim.Adam(params=model.parameters(), lr=args.fine_lr)
     trainer = train.Trainer(model, optimizer, args.save_path, get_device(args.gpu), args)
 
-    def func_loss(model, batch):
-        inputs, label = batch
-        logits = model(inputs)
+    def func_loss(model, batch,label,num_images,batched_image_ids,key_pad_mask):
+        logits = model(batch,num_images,batched_image_ids,key_pad_mask)
         loss = criterion(logits, label)
         return loss
 
-    def func_forward(model, batch):
-        inputs, label = batch
-        logits = model(inputs)
+    def func_forward(model, batch,label,num_images,batched_image_ids,key_pad_mask):
+        logits = model(batch,num_images,batched_image_ids,key_pad_mask)
         return logits, label
 
     def func_evaluate(label, predicts):
@@ -199,18 +221,26 @@ def fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data
 if __name__ == "__main__":
     args = handle_argv_pre_train()
     data_train = ImageFolder(
-        root="../data_split_opp_train",
+        root="../data/pretrain",
 )
-    data_val = ImageFolder(
-        root="../data_split_opp_val",
+    data_valid = ImageFolder(
+        root="../data/valid",
 )
     print("start pre-train\n")
-    pre_train(args, data_train,data_val)
+    pre_train(args, data_train,data_valid)
     #先把预训练部分搞出来 微调先注释了
-    # print("start fine-tuning\n")
-    # args = handle_argv_finetune(args)
-    # fine_tuning(args, data_train_l, label_train_l, data_valid, label_valid, data_test, label_test)
+    print("start fine-tuning\n")
+    args = handle_argv_finetune(args)
+    
+    data_train_l = ImageFolder(
+        root="../data/train",
+)
+    data_test = ImageFolder(
+        root="../data/test",
+)
+    
+    fine_tuning(args, data_train_l, data_valid, data_test)
 
-    # print("dataset:{}, test_user: {}, path: {}".format(args.dataset, args.test_user, args.path))
+    print("dataset:{}, test_user: {}, path: {}".format(args.dataset, args.test_user, args.path))
 
     
