@@ -2,6 +2,7 @@ import copy
 from tkinter import NO
 from einops import rearrange
 import torch
+import time
 import torch.nn as nn
 import numpy as np
 from timm.layers import trunc_normal_
@@ -33,16 +34,17 @@ class Trainer(object):
         for e in range(self.args.epoch):
             loss_sum = 0.0 # the sum of iteration losses to get average loss in every epoch
             self.model.train()    
-   
+
             for (batch,_, batch_adjusted_lengths,_,attn_mask,_,_,_) in data_loader_train:
-                  
+                self.optimizer.zero_grad()       
                 batch = batch.to(self.device)
-                self.optimizer.zero_grad()
                 attn_mask=attn_mask.to(self.device)
                 loss = func_loss(model, batch,attn_mask,batch_adjusted_lengths)  
                 loss = loss.mean()
+
                 loss.backward()      
                 self.optimizer.step()
+                
                 global_step += 1
                 loss_sum += loss.item()
                 

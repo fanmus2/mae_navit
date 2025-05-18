@@ -16,6 +16,11 @@ import train
 from typing import List, Tuple, Optional, Callable
 from torch.nn.utils.rnn import pad_sequence 
 
+import inspect
+
+from torchvision import models
+
+
 def custom_collate_fn(
     batch: Tuple[any,any,any],
     calc_token_dropout: Optional[Callable] = None,
@@ -23,6 +28,7 @@ def custom_collate_fn(
 ) -> Tuple[torch.tensor, List[torch.tensor], List[torch.tensor], List[torch.tensor],torch.tensor,torch.tensor,torch.tensor,torch.tensor]:
     num_images=[]
         # 处理每个样本并计算调整后的长度
+    # start_time = time.time()
     processed_items = [] 
     for item, index,label in batch:
         adjusted_len= item.shape[-2]  # 原始序列长度 (L)
@@ -69,7 +75,7 @@ def custom_collate_fn(
                 packed_adjusted_lengths.append(torch.tensor(lengths))
                 packed_indices.append(torch.tensor(indices))  
                 batched_image_ids.append(torch.tensor(image_ids))
-                num_images.append(image_ids[-1])  
+                num_images.append(image_ids[-1]+1)  
                 # 重置指针
                 ptr = 0
                 id=0
@@ -80,13 +86,13 @@ def custom_collate_fn(
                 
         # 添加新元素时:
         if ptr + sub_len <=max_seq_len:
-            id=id+1
             buffer[ ptr:ptr+sub_len, :] = item
             ptr += sub_len
             labels.append(label)
             lengths.append(sub_len)
             indices.append(index)
             image_ids.extend([id] * sub_len)
+            id=id+1
     if ptr > 0:
 # 截取有效数据
         concatenated = buffer[:ptr,:].copy() 
@@ -96,7 +102,7 @@ def custom_collate_fn(
         packed_adjusted_lengths.append(torch.tensor(lengths))#在最开始用extend会不会好点？
         packed_indices.append(torch.tensor(indices))  
         batched_image_ids.append(torch.tensor(image_ids)) 
-        num_images.append(image_ids[-1])     
+        num_images.append(image_ids[-1]+1)     
     #(L,c)       
     batched_image_ids = pad_sequence(batched_image_ids,batch_first=True)
     #注意力 掩码 用来将一个序列内 不同窗独立开来 
@@ -111,6 +117,9 @@ def custom_collate_fn(
     packed_batch = pad_sequence(packed_batch,batch_first=True)
     attn_mask = attn_mask & rearrange(key_pad_mask, 'b j -> b 1 1 j')#这就是最终要的mask
     num_images=torch.tensor(num_images)
+    
+    # end_time = time.time() 
+    # print(f"代码运行时间：{end_time - start_time:.6f} 秒")  
     return packed_batch,packed_labels, packed_adjusted_lengths, packed_indices,attn_mask,batched_image_ids,num_images,key_pad_mask
 
 
@@ -227,6 +236,7 @@ if __name__ == "__main__":
         root="../data/valid",
 )
     print("start pre-train\n")
+    # 创建显存检测对象
     pre_train(args, data_train,data_valid)
     #先把预训练部分搞出来 微调先注释了
     print("start fine-tuning\n")
