@@ -103,7 +103,7 @@ class Attention(nn.Module):
         )
         # q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
-
+    
         if self.fused_attn:
             x = F.scaled_dot_product_attention(
                 q, k, v,
@@ -134,7 +134,7 @@ class Attention(nn.Module):
                 # 替换原始的掩码
                 attn_mask_fintune = new_attn_mask_fintune
                 attn = attn.masked_fill(~attn_mask_fintune, float('-inf'))  # ~ 表示逻辑非    
-                
+
             attn = attn.softmax(dim=-1)
             attn=torch.where(torch.isnan(attn),torch.full_like(attn,0),attn)
             attn = self.attn_drop(attn)
@@ -142,24 +142,25 @@ class Attention(nn.Module):
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+
         return x
 
-class LayerScale(nn.Module):
-    def __init__(
-            self,
-            dim: int,
-            init_values: float = 1e-5,
-            inplace: bool = False,
-    ) -> None:
-        super().__init__()
-        self.inplace = inplace
-        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+# class LayerScale(nn.Module):
+#     def __init__(
+#             self,
+#             dim: int,
+#             init_values: float = 1e-5,
+#             inplace: bool = False,
+#     ) -> None:
+#         super().__init__()
+#         self.inplace = inplace
+#         self.gamma = nn.Parameter(init_values * torch.ones(dim))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         return x.mul_(self.gamma) if self.inplace else x * self.gamma
 
     
-class Block(nn.Module):
+class Block_change(nn.Module):
     def __init__(
             self,
             dim: int,
@@ -188,23 +189,25 @@ class Block(nn.Module):
             proj_drop=proj_drop,
             norm_layer=norm_layer,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        # self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         self.norm2 = LayerNorm(dim)
         self.mlp = mlp_layer(
             dim=dim,
             hidden_dim=int(dim * mlp_ratio),
-            # act_layer=act_layer,
-            # bias=proj_bias,
             dropout=proj_drop,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        # self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x: torch.Tensor,attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x),attn_mask=attn_mask)))  
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        print(torch.cuda.memory_allocated(3)/(1024**2),"MB1,BLOCK1")
+        # x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x),attn_mask=attn_mask)))  
+        # x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        x = x + self.drop_path1(self.attn(self.norm1(x),attn_mask=attn_mask))  
+        x = x + self.drop_path2(self.mlp(self.norm2(x)))
+        print(torch.cuda.memory_allocated(3)/(1024**2),"MB1,BLOCK2")
         return x
 
 
@@ -226,15 +229,21 @@ class STMAE_Pre(nn.Module):
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, window_size + 1, embed_dim), requires_grad=False)
+        # self.blocks = nn.ModuleList([
+        #     Block_change(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
+        #     for i in range(depth)])
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, window_size + 1, decoder_embed_dim), requires_grad=False)     
+        # self.decoder_blocks = nn.ModuleList([
+        #     Block_change(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
+        #     for i in range(decoder_depth)])
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer,proj_drop=proj_drop,attn_drop=attn_drop)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(decoder_depth)])
         self.decoder_norm = norm_layer(decoder_embed_dim)
         # self.decoder_pred = nn.Linear(decoder_embed_dim, node_dim*node_num, bias=True)
@@ -309,7 +318,7 @@ class STMAE_Pre(nn.Module):
 
     
     def forward_encoder(self,x,attn_mask,batch_adjusted_lengths, mask_ratio):
-        x = x + self.pos_embed[:, 1:, :]
+        x = x + self.pos_embed[:, 1:x.shape[1]+1, :]
         # masking: length -> length * mask_ratio
         x, mask, ids_restore,attn_mask_masked = self.random_masking(x, mask_ratio,attn_mask,batch_adjusted_lengths)
         attn_mask_masked=attn_mask_masked.to(x.device)
@@ -318,7 +327,7 @@ class STMAE_Pre(nn.Module):
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         for blk in self.blocks:
-            x = blk(x,attn_mask=attn_mask_masked)
+            x = blk(x)
         x = self.norm(x)
         return x, mask, ids_restore
     
@@ -326,20 +335,22 @@ class STMAE_Pre(nn.Module):
         # embed tokens
         x = self.decoder_embed(x)
         # append mask tokens to sequence
+
         mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1) 
         x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
         x = torch.cat([x[:, :1, :], x_], dim=1)
         # add pos embed
-        x = x + self.decoder_pos_embed
+        x = x + self.decoder_pos_embed[:, 0:x.shape[1]+1, :]
         # apply Transformer blocks
         for blk in self.decoder_blocks:
-            x = blk(x,attn_mask=attn_mask)
+            x = blk(x)
         x = self.decoder_norm(x)
         # predictor projection
         x = self.decoder_pred(x)
         # remove cls token
         x = x[:, 1:, :]
+        
 
         return x
 
@@ -359,7 +370,6 @@ class STMAE_Pre(nn.Module):
         x = self.bn1(self.conv1(x))
         x = x.squeeze()
         x = x.permute(0, 2, 1)
-
         latent, mask, ids_restore = self.forward_encoder(x, attn_mask,batch_adjusted_lengths,mask_ratio=self.mask_ratio)
         pred = self.forward_decoder(latent, ids_restore,attn_mask)
         imgs = imgs.permute(0, 2, 1, 3)
@@ -370,7 +380,6 @@ class STMAE_Pre(nn.Module):
         imgs = imgs[idx[:, 0], idx[:, 1], :]
         pred = pred.reshape(x.shape[0], -1, pred.shape[1])
         imgs = imgs.reshape(x.shape[0], -1, imgs.shape[1])
-
         return imgs, pred
 
 class STMAE_Finetune(nn.Module):
@@ -421,7 +430,7 @@ class STMAE_Finetune(nn.Module):
     def forward_encoder_full(self, x):
 
         # add pos embed w/o cls token
-        x = x + self.pos_embed[:, 1:, :]
+        x = x + self.pos_embed[:, 1:x.shape[1]+1, :]
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
