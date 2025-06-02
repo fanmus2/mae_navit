@@ -95,7 +95,7 @@ def handle_argv_pre_train():
     parser = argparse.ArgumentParser(description='STMAE: Spatial-Temporal Masked Autoencoder for Multi-Device Wearable Human Activity Recognition')
     parser.add_argument('-u', '--test_user', type=int, nargs='+', default=[0], help='Test user')
     parser.add_argument('-d', '--dataset', type=str, default='opp', help='Dataset name', choices=['realworld', 'opp', 'realdisp', 'pamap'])
-    parser.add_argument('-g', '--gpu', type=str, default="3", help='Set specific GPU')
+    parser.add_argument('-g', '--gpu', type=str, default="1", help='Set specific GPU')
     parser.add_argument('-f', '--model_file', type=str, default=None, help='Pretrain model file')
     parser.add_argument('-l', '--label_index', type=int, default=23, help='Label Index')
     parser.add_argument('-s', '--seed', type=int, default=1, help='Seed')
